@@ -1,41 +1,148 @@
 # FridgeChef Android
 
-Native Android port of FridgeChef: a local-first recipe assistant that turns dish names, meal ideas, fridge photos, and manually saved recipes into a personal cookbook.
+> Type a dish, pick a meal idea, snap your fridge, or save your own recipe.
 
-The app is based on the iOS cross-platform contract in `recipe-ingredients-ios/docs/CROSS_PLATFORM_SPEC.md`, then extended with Cookbook Phase 1: create recipes, edit recipes, favorite recipes, filter favorites, and delete recipes or batches.
+Android port of FridgeChef with a recipe catalog home screen, local cookbook storage, and cookbook phase 1 features for creating, editing, favoriting, filtering, and deleting recipes. The app follows the cross-platform contract in `recipe-ingredients-ios/docs/CROSS_PLATFORM_SPEC.md` and keeps the same local-first model: no account, no backend, no cloud sync.
 
-## Screenshots
+<p align="center">
+  <img src="docs/screenshots/catalog.png" alt="FridgeChef Android catalog screen" width="260" />
+  &nbsp;
+  <img src="docs/screenshots/recipes.png" alt="FridgeChef Android recipes screen" width="260" />
+  &nbsp;
+  <img src="docs/screenshots/settings.png" alt="FridgeChef Android settings screen" width="260" />
+</p>
 
-| Catalog | Recipes |
-|---|---|
-| <img src="docs/screenshots/catalog.png" width="260" alt="FridgeChef Android catalog screen"> | <img src="docs/screenshots/recipes.png" width="260" alt="FridgeChef Android recipes screen"> |
+<p align="center"><sub>Catalog, cookbook, and settings in one local-first Android app.</sub></p>
 
-| Create Recipe | Settings |
-|---|---|
-| <img src="docs/screenshots/create-recipe.png" width="260" alt="FridgeChef Android create recipe screen"> | <img src="docs/screenshots/settings.png" width="260" alt="FridgeChef Android settings screen"> |
+---
 
 ## Features
 
-- Generate three recipe ideas from a typed dish name
-- Generate breakfast, lunch, or dinner ideas from catalog cards
-- Pick a fridge/pantry photo and generate recipes from visible ingredients
-- Surprise mode for random meal and style combinations
-- Daily meal-card picks cached per calendar day
-- Save generated batches locally
-- Create a custom recipe manually
-- Edit generated or user-created recipes
-- Favorite recipes and filter the Recipes tab to favorites
-- Delete individual recipes or full batches
-- Switch between system, light, and dark themes
-
-## Stack
-
-- Kotlin + Jetpack Compose
-- MVVM with `StateFlow`
+- Recipe Catalog Home with four entry points
+  - text field for any dish name
+  - Breakfast / Lunch / Dinner idea cards
+  - From my fridge photo flow
+  - magic surprise button
+- Daily meal-card picks cached once per calendar day
+- Cookbook Phase 1 recipe management
+  - create a custom recipe
+  - edit generated or user-created recipes
+  - favorite recipes
+  - filter favorites in Recipes
+  - delete a single recipe
+  - delete a full batch
 - Local SQLite persistence using the portable schema from the iOS spec
 - SharedPreferences for theme and daily-pick cache
-- Direct OpenAI Chat Completions calls with strict JSON-schema responses
-- Compose UI tests for cookbook flows
+- Real OpenAI chat completions flow for app builds, with a fake client available for deterministic UI tests
+
+## Walkthrough
+
+### Recipe Catalog Home
+
+| Catalog | Create Recipe |
+|---|---|
+| <img src="docs/screenshots/catalog.png" width="240" alt="FridgeChef Android catalog screen"> | <img src="docs/screenshots/create-recipe.png" width="240" alt="FridgeChef Android create recipe screen"> |
+
+The home tab combines a dish input, the four recipe entry points, and a surprise button. Cookbook Phase 1 adds the manual recipe form from the Recipes tab.
+
+### Recipes and Settings
+
+| Recipes | Settings |
+|---|---|
+| <img src="docs/screenshots/recipes.png" width="240" alt="FridgeChef Android recipes screen"> | <img src="docs/screenshots/settings.png" width="240" alt="FridgeChef Android settings screen"> |
+
+Recipes now behave like a personal cookbook: saved batches, create flow, edit flow, favorite toggle, favorites filter, and deletes. Settings keeps theme switching and key status visible.
+
+---
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "FridgeChef Android (Compose, MVVM, local-first)"
+        MainActivity[MainActivity]
+        CatalogVM[CatalogViewModel]
+        RecipesVM[RecipesViewModel]
+        SettingsVM[SettingsViewModel]
+        Store[RecipeSqliteStore]
+        Prefs[AppPreferences]
+        OpenAI[OpenAIChatClient]
+        Fake[FakeOpenAIClient]
+    end
+
+    MainActivity --> CatalogVM
+    MainActivity --> RecipesVM
+    MainActivity --> SettingsVM
+    CatalogVM --> Store
+    CatalogVM --> OpenAI
+    RecipesVM --> Store
+    SettingsVM --> Store
+    SettingsVM --> Prefs
+    OpenAI --> API[(api.openai.com)]
+    Fake --> Store
+```
+
+### Data flow
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Compose UI
+    participant VM as ViewModel
+    participant Store as RecipeSqliteStore
+    participant OpenAI as OpenAIClient
+
+    User->>UI: type dish / tap card / edit recipe
+    UI->>VM: intent
+    VM->>OpenAI: generate recipes or daily picks
+    VM->>Store: save / update / favorite / delete
+    Store-->>VM: updated data
+    VM-->>UI: new state
+```
+
+### Key principles
+
+- UI is Compose-only, with one activity and state-driven screens.
+- ViewModels own the business logic and call services through interfaces.
+- Persistence is local SQLite plus SharedPreferences.
+- Real app builds use the OpenAI client; UI tests use a fake client for deterministic runs.
+- The app keeps the same offline cookbook behavior even when the API key is absent.
+
+## Tech Stack
+
+| Layer | Choice |
+|---|---|
+| UI | Jetpack Compose |
+| Architecture | MVVM + `StateFlow` |
+| Concurrency | Kotlin coroutines |
+| Networking | Direct OpenAI Chat Completions |
+| Persistence | SQLiteOpenHelper + SharedPreferences |
+| Min Android | API 28 |
+| Tests | JUnit + Compose UI tests |
+| Project layout | Single app module |
+
+## Project Structure
+
+```
+recipe-ingredients-android/
+├── README.md
+├── build.gradle.kts
+├── settings.gradle.kts
+├── gradle.properties
+├── gradle/
+├── app/
+│   ├── build.gradle.kts
+│   └── src/
+│       ├── main/
+│       │   ├── AndroidManifest.xml
+│       │   ├── java/com/zeekrbaha/fridgechef/
+│       │   ├── res/
+│       │   └── ...
+│       └── androidTest/
+├── docs/
+│   └── screenshots/
+└── gradlew
+```
 
 ## Setup
 
@@ -51,14 +158,12 @@ Build the debug app:
 ./gradlew :app:assembleDebug
 ```
 
-The API key is read into `BuildConfig.OPENAI_API_KEY` and is ignored by git.
-
 ## Tests
 
 Run JVM tests and build the app:
 
 ```bash
-GRADLE_USER_HOME=/private/tmp/gradlehome ./gradlew testDebugUnitTest assembleDebug
+GRADLE_USER_HOME=/private/tmp/gradlehome ./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
 
 Run connected emulator UI tests:
