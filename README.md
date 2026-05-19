@@ -181,5 +181,5 @@ Current verified status:
 
 ## GitHub
 
-- Android repo: https://github.com/ZeekrBaha/recipe-ingredients-android
+- Android repo: https://github.com/ZeekrBaha/fridgechef-android
 - iOS reference repo: https://github.com/ZeekrBaha/fridgechef-ios
