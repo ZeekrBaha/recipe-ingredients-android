@@ -90,6 +90,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.zeekrbaha.fridgechef.data.MealType
 import com.zeekrbaha.fridgechef.data.Recipe
 import com.zeekrbaha.fridgechef.data.RecipeBatch
+import com.zeekrbaha.fridgechef.data.RecipeSource
 import com.zeekrbaha.fridgechef.data.ThemePreference
 import com.zeekrbaha.fridgechef.ui.theme.FridgeChefTheme
 import com.zeekrbaha.fridgechef.ui.theme.InkDark
@@ -130,6 +131,13 @@ class MainActivity : ComponentActivity() {
 private enum class Tab { Catalog, Recipes, Settings }
 
 private data class EditorTarget(val recipe: Recipe? = null, val batchId: String? = null)
+private data class RecipeFormSnapshot(
+    val title: String,
+    val description: String,
+    val ingredients: List<String>,
+    val steps: List<String>,
+    val estimatedTime: String,
+)
 
 @Composable
 private fun FridgeChefApp(factory: FridgeChefViewModelFactory, settingsViewModel: SettingsViewModel) {
@@ -149,42 +157,67 @@ private fun FridgeChefApp(factory: FridgeChefViewModelFactory, settingsViewModel
         editorTarget != null -> CreateEditRecipeScreen(
             target = editorTarget!!,
             onCancel = { editorTarget = null },
-            onSave = { recipe, batchId ->
+            onSave = { recipe, batchId, onError ->
                 if (batchId == null) {
-                    recipes.createRecipe(recipe) {
-                        editorTarget = null
-                        activeBatch = it
-                    }
+                    recipes.createRecipe(
+                        recipe,
+                        onSaved = {
+                            editorTarget = null
+                            activeBatch = it
+                        },
+                        onError = onError,
+                    )
                 } else {
-                    recipes.updateRecipe(recipe, batchId) { updated ->
-                        editorTarget = null
-                        activeRecipe = updated
-                        activeBatch = activeBatch?.replacing(updated)
-                    }
+                    recipes.updateRecipe(
+                        recipe,
+                        batchId,
+                        onSaved = { updated ->
+                            editorTarget = null
+                            activeRecipe = updated
+                            activeBatch = activeBatch?.replacing(updated)
+                        },
+                        onError = onError,
+                    )
                 }
+            },
+            onDelete = { recipeId, onError ->
+                recipes.deleteRecipe(
+                    recipeId,
+                    onDeleted = { updatedBatch ->
+                        editorTarget = null
+                        activeRecipe = null
+                        activeBatch = null
+                        tab = Tab.Recipes
+                    },
+                    onError = onError,
+                )
             },
         )
         activeRecipe != null -> RecipeDetailScreen(
             recipe = activeRecipe!!,
-            onBack = { activeRecipe = null },
-            onEdit = { editorTarget = EditorTarget(activeRecipe, activeBatch?.id) },
-            onFavorite = { favorite ->
-                val current = activeRecipe ?: return@RecipeDetailScreen
-                recipes.setFavorite(current, favorite) { updated ->
-                    activeRecipe = updated
-                    activeBatch = activeBatch?.replacing(updated)
+            onBack = {
+                if (activeBatch?.source == RecipeSource.User && activeBatch?.recipes?.size == 1) {
+                    activeRecipe = null
+                    activeBatch = null
+                } else {
+                    activeRecipe = null
                 }
             },
+            onEdit = { editorTarget = EditorTarget(activeRecipe, activeBatch?.id) },
         )
         activeBatch != null -> RecipeBatchScreen(
             batch = activeBatch!!,
             onRecipe = { activeRecipe = it },
             onBack = { activeBatch = null },
-            onDelete = { recipe ->
-                recipes.deleteRecipe(recipe.id) { updatedBatch ->
-                    activeBatch = updatedBatch
-                    if (updatedBatch == null) activeRecipe = null
-                }
+            onDelete = { recipe, onError ->
+                recipes.deleteRecipe(
+                    recipe.id,
+                    onDeleted = { updatedBatch ->
+                        activeBatch = updatedBatch
+                        if (updatedBatch == null) activeRecipe = null
+                    },
+                    onError = onError,
+                )
             },
         )
         else -> Scaffold(
@@ -220,8 +253,11 @@ private fun FridgeChefApp(factory: FridgeChefViewModelFactory, settingsViewModel
                     viewModel = recipes,
                     padding = padding,
                     onBatch = { activeBatch = it },
+                    onRecipe = { batch, recipe ->
+                        activeBatch = batch
+                        activeRecipe = recipe
+                    },
                     onCreate = { editorTarget = EditorTarget() },
-                    onDeleteBatch = { batch -> recipes.deleteBatch(batch.id) },
                 )
                 Tab.Settings -> SettingsScreen(settingsViewModel, padding, onCleared = { recipes.load() })
             }
@@ -362,8 +398,8 @@ private fun RecipesScreen(
     viewModel: RecipesViewModel,
     padding: PaddingValues,
     onBatch: (RecipeBatch) -> Unit,
+    onRecipe: (RecipeBatch, Recipe) -> Unit,
     onCreate: () -> Unit,
-    onDeleteBatch: (RecipeBatch) -> Unit,
 ) {
     val batches by viewModel.batches.collectAsState()
     val filter by viewModel.filter.collectAsState()
@@ -375,6 +411,7 @@ private fun RecipesScreen(
             if (favorites.isEmpty()) null else batch.copy(recipes = favorites)
         }
     }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<RecipeBatch?>(null) }
     LaunchedEffect(Unit) { viewModel.load() }
     LazyColumn(
@@ -401,18 +438,36 @@ private fun RecipesScreen(
         } else {
             items(visibleBatches) { batch ->
                 Card(
-                    modifier = Modifier.fillMaxWidth().clickable { onBatch(batch) },
+                    modifier = Modifier.fillMaxWidth().testTag("recipes.row.${batch.recipes.firstOrNull()?.title.orEmpty().recipeTagSlug()}").clickable {
+                        if (batch.source == RecipeSource.User && batch.recipes.size == 1) {
+                            onRecipe(batch, batch.recipes.first())
+                        } else {
+                            onBatch(batch)
+                        }
+                    },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     shape = RoundedCornerShape(8.dp),
                 ) {
                     Row(Modifier.padding(Space.s16), verticalAlignment = Alignment.CenterVertically) {
-                        if (batch.recipes.any { it.isFavorite }) {
-                            Icon(Icons.Filled.Favorite, null, tint = terracotta(), modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(Space.s8))
-                        }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.s4)) {
                             Text(batch.recipes.firstOrNull()?.title ?: "Recipe batch", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                             Text("${batch.recipes.size} recipes · ${batch.source.name.lowercase()}", style = MaterialTheme.typography.labelMedium, color = secondaryText())
+                        }
+                        IconButton(
+                            onClick = {
+                                viewModel.toggleBatchFavorite(
+                                    batch,
+                                    onSaved = {},
+                                    onError = { errorMessage = it },
+                                )
+                            },
+                            modifier = Modifier.testTag("recipes.favorite.${batch.recipes.firstOrNull()?.title.orEmpty().recipeTagSlug()}"),
+                        ) {
+                            Icon(
+                                if (batch.recipes.all { it.isFavorite }) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                contentDescription = "Favorite batch",
+                                tint = terracotta(),
+                            )
                         }
                         IconButton(onClick = { pendingDelete = batch }, modifier = Modifier.testTag("recipes.delete.batch")) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete batch", tint = terracotta())
@@ -422,11 +477,25 @@ private fun RecipesScreen(
             }
         }
     }
+    errorMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            confirmButton = { TextButton(onClick = { errorMessage = null }) { Text("OK") } },
+            title = { Text("Something went wrong") },
+            text = { Text(message) },
+        )
+    }
     pendingDelete?.let { batch ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             confirmButton = {
-                TextButton(onClick = { onDeleteBatch(batch); pendingDelete = null }) { Text("Delete") }
+                TextButton(onClick = {
+                    viewModel.deleteBatch(
+                        batch.id,
+                        onDeleted = { pendingDelete = null },
+                        onError = { errorMessage = it },
+                    )
+                }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
             title = { Text("Delete recipe batch?") },
@@ -449,8 +518,9 @@ private fun FilterButton(label: String, tag: String, selected: Boolean, onClick:
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecipeBatchScreen(batch: RecipeBatch, onRecipe: (Recipe) -> Unit, onBack: () -> Unit, onDelete: (Recipe) -> Unit) {
+private fun RecipeBatchScreen(batch: RecipeBatch, onRecipe: (Recipe) -> Unit, onBack: () -> Unit, onDelete: (Recipe, (String) -> Unit) -> Unit) {
     var pendingDelete by remember { mutableStateOf<Recipe?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     Scaffold(
         topBar = { CenterAlignedTopAppBar(title = { Text("Recipe ideas") }, navigationIcon = { TextButton(onClick = onBack) { Text("Back") } }) },
     ) { padding ->
@@ -463,11 +533,22 @@ private fun RecipeBatchScreen(batch: RecipeBatch, onRecipe: (Recipe) -> Unit, on
             items(batch.recipes) { recipe -> RecipeCard(recipe, onClick = { onRecipe(recipe) }, onDelete = { pendingDelete = recipe }) }
         }
     }
+    errorMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            confirmButton = { TextButton(onClick = { errorMessage = null }) { Text("OK") } },
+            title = { Text("Something went wrong") },
+            text = { Text(message) },
+        )
+    }
     pendingDelete?.let { recipe ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             confirmButton = {
-                TextButton(onClick = { onDelete(recipe); pendingDelete = null }) { Text("Delete") }
+                TextButton(onClick = {
+                    onDelete(recipe) { errorMessage = it }
+                    pendingDelete = null
+                }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
             title = { Text("Delete recipe?") },
@@ -479,7 +560,7 @@ private fun RecipeBatchScreen(batch: RecipeBatch, onRecipe: (Recipe) -> Unit, on
 @Composable
 private fun RecipeCard(recipe: Recipe, onClick: () -> Unit, onDelete: (() -> Unit)? = null) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).border(BorderStroke(1.dp, rule()), RoundedCornerShape(12.dp)),
+        modifier = Modifier.fillMaxWidth().testTag("batch.card").clickable(onClick = onClick).border(BorderStroke(1.dp, rule()), RoundedCornerShape(12.dp)),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         shape = RoundedCornerShape(12.dp),
     ) {
@@ -507,20 +588,13 @@ private fun RecipeCard(recipe: Recipe, onClick: () -> Unit, onDelete: (() -> Uni
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RecipeDetailScreen(recipe: Recipe, onBack: () -> Unit, onEdit: () -> Unit, onFavorite: (Boolean) -> Unit) {
+private fun RecipeDetailScreen(recipe: Recipe, onBack: () -> Unit, onEdit: () -> Unit) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {},
                 navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
                 actions = {
-                    IconButton(onClick = { onFavorite(!recipe.isFavorite) }, modifier = Modifier.testTag("detail.favorite.button")) {
-                        Icon(
-                            if (recipe.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                            contentDescription = "Favorite recipe",
-                            tint = terracotta(),
-                        )
-                    }
                     IconButton(onClick = onEdit, modifier = Modifier.testTag("detail.edit.button")) { Icon(Icons.Filled.Edit, contentDescription = "Edit recipe", tint = sage()) }
                 },
             )
@@ -542,20 +616,45 @@ private fun RecipeDetailScreen(recipe: Recipe, onBack: () -> Unit, onEdit: () ->
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CreateEditRecipeScreen(target: EditorTarget, onCancel: () -> Unit, onSave: (Recipe, String?) -> Unit) {
+private fun CreateEditRecipeScreen(
+    target: EditorTarget,
+    onCancel: () -> Unit,
+    onSave: (Recipe, String?, onError: (String) -> Unit) -> Unit,
+    onDelete: (String, onError: (String) -> Unit) -> Unit,
+) {
     val existing = target.recipe
     var title by rememberSaveable(existing?.id) { mutableStateOf(existing?.title.orEmpty()) }
     var description by rememberSaveable(existing?.id) { mutableStateOf(existing?.description.orEmpty()) }
     var ingredients by remember(existing?.id) { mutableStateOf(existing?.ingredients?.ifEmpty { listOf("") } ?: listOf("")) }
     var steps by remember(existing?.id) { mutableStateOf(existing?.steps?.ifEmpty { listOf("") } ?: listOf("")) }
     var estimatedTime by rememberSaveable(existing?.id) { mutableStateOf(existing?.estimatedTime.orEmpty()) }
+    val initialSnapshot = remember(existing?.id) {
+        RecipeFormSnapshot(
+            title = existing?.title.orEmpty(),
+            description = existing?.description.orEmpty(),
+            ingredients = existing?.ingredients?.ifEmpty { listOf("") } ?: listOf(""),
+            steps = existing?.steps?.ifEmpty { listOf("") } ?: listOf(""),
+            estimatedTime = existing?.estimatedTime.orEmpty(),
+        )
+    }
+    val currentSnapshot = RecipeFormSnapshot(title.trim(), description.trim(), ingredients, steps, estimatedTime.trim())
+    val hasUnsavedChanges = currentSnapshot != initialSnapshot
     val isValid = title.trim().isNotEmpty() && ingredients.any { it.trim().isNotEmpty() } && steps.any { it.trim().isNotEmpty() }
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text(if (existing == null) "New Recipe" else "Edit Recipe") },
-                navigationIcon = { TextButton(onClick = onCancel) { Text("Cancel") } },
+                navigationIcon = {
+                    TextButton(
+                        onClick = {
+                            if (hasUnsavedChanges) showDiscardDialog = true else onCancel()
+                        },
+                    ) { Text("Cancel") }
+                },
                 actions = {
                     TextButton(
                         enabled = isValid,
@@ -573,6 +672,7 @@ private fun CreateEditRecipeScreen(target: EditorTarget, onCancel: () -> Unit, o
                                     updatedAtEpochMillis = existing?.updatedAtEpochMillis,
                                 ),
                                 target.batchId,
+                                { errorMessage = it },
                             )
                         },
                     ) { Text("Save") }
@@ -635,7 +735,56 @@ private fun CreateEditRecipeScreen(target: EditorTarget, onCancel: () -> Unit, o
                     singleLine = true,
                 )
             }
+            if (existing != null) {
+                item {
+                    TextButton(
+                        onClick = { showDeleteDialog = true },
+                        colors = ButtonDefaults.textButtonColors(contentColor = terracotta()),
+                        modifier = Modifier.fillMaxWidth().testTag("create.delete.button"),
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = null)
+                        Spacer(Modifier.width(Space.s8))
+                        Text("Delete Recipe")
+                    }
+                }
+            }
         }
+    }
+    errorMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            confirmButton = { TextButton(onClick = { errorMessage = null }) { Text("OK") } },
+            title = { Text("Something went wrong") },
+            text = { Text(message) },
+        )
+    }
+    if (showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiscardDialog = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDiscardDialog = false
+                    onCancel()
+                }) { Text("Discard") }
+            },
+            dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("Keep editing") } },
+            title = { Text("Discard changes?") },
+            text = { Text("You have unsaved changes.") },
+        )
+    }
+    if (showDeleteDialog && existing != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(existing.id) { errorMessage = it }
+                    showDeleteDialog = false
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } },
+            title = { Text("Delete this recipe?") },
+            text = { Text("This permanently removes ${existing.title}.") },
+        )
     }
 }
 
@@ -681,6 +830,7 @@ private fun SectionList(title: String, values: List<String>) {
 @Composable
 private fun SettingsScreen(viewModel: SettingsViewModel, padding: PaddingValues, onCleared: () -> Unit) {
     val theme by viewModel.theme.collectAsState()
+    var errorMessage by remember { mutableStateOf<String?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding),
         contentPadding = PaddingValues(Space.s24),
@@ -701,10 +851,23 @@ private fun SettingsScreen(viewModel: SettingsViewModel, padding: PaddingValues,
         }
         item {
             TextButton(
-                onClick = { viewModel.clearRecipes(onCleared) },
+                onClick = {
+                    viewModel.clearRecipes(
+                        onDone = onCleared,
+                        onError = { errorMessage = it },
+                    )
+                },
                 colors = ButtonDefaults.textButtonColors(contentColor = terracotta()),
             ) { Text("Clear all recipes") }
         }
+    }
+    errorMessage?.let { message ->
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            confirmButton = { TextButton(onClick = { errorMessage = null }) { Text("OK") } },
+            title = { Text("Something went wrong") },
+            text = { Text(message) },
+        )
     }
 }
 
@@ -731,3 +894,7 @@ private fun RecipeBatch.replacing(recipe: Recipe): RecipeBatch {
 @Composable private fun rule() = if (androidx.compose.foundation.isSystemInDarkTheme()) RuleDark else RuleLight
 @Composable private fun sage() = if (androidx.compose.foundation.isSystemInDarkTheme()) SageDark else SageLight
 @Composable private fun terracotta() = if (androidx.compose.foundation.isSystemInDarkTheme()) TerracottaDark else TerracottaLight
+
+private fun String.recipeTagSlug(): String {
+    return lowercase(java.util.Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
+}

@@ -107,45 +107,87 @@ class RecipesViewModel(private val dependencies: Dependencies) : ViewModel() {
         }
     }
 
-    fun createRecipe(recipe: Recipe, onSaved: (RecipeBatch) -> Unit = {}) {
+    fun createRecipe(recipe: Recipe, onSaved: (RecipeBatch) -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            val batch = dependencies.recipeStore.save(
-                RecipeBatch(recipes = listOf(recipe), source = RecipeSource.User),
-            )
-            load()
-            onSaved(batch)
+            runCatching {
+                dependencies.recipeStore.save(
+                    RecipeBatch(recipes = listOf(recipe), source = RecipeSource.User),
+                )
+            }.onSuccess { batch ->
+                load()
+                onSaved(batch)
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't save recipe.")
+            }
         }
     }
 
-    fun updateRecipe(recipe: Recipe, batchId: String, onSaved: (Recipe) -> Unit = {}) {
+    fun updateRecipe(recipe: Recipe, batchId: String, onSaved: (Recipe) -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            val updated = dependencies.recipeStore.update(recipe, batchId)
-            load()
-            onSaved(updated)
+            runCatching {
+                dependencies.recipeStore.update(recipe, batchId)
+            }.onSuccess { updated ->
+                load()
+                onSaved(updated)
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't save recipe.")
+            }
         }
     }
 
-    fun setFavorite(recipe: Recipe, isFavorite: Boolean, onSaved: (Recipe) -> Unit = {}) {
+    fun setFavorite(recipe: Recipe, isFavorite: Boolean, onSaved: (Recipe) -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            val updated = dependencies.recipeStore.setFavorite(recipe.id, isFavorite)
-            load()
-            onSaved(updated)
+            runCatching {
+                dependencies.recipeStore.setFavorite(recipe.id, isFavorite)
+            }.onSuccess { updated ->
+                load()
+                onSaved(updated)
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't update favorite.")
+            }
         }
     }
 
-    fun deleteRecipe(recipeId: String, onDeleted: (RecipeBatch?) -> Unit = {}) {
+    fun toggleBatchFavorite(batch: RecipeBatch, onSaved: (RecipeBatch) -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            val batch = dependencies.recipeStore.deleteRecipe(recipeId)
-            load()
-            onDeleted(batch)
+            runCatching {
+                val targetFavorite = !batch.recipes.all { it.isFavorite }
+                batch.recipes.forEach { dependencies.recipeStore.setFavorite(it.id, targetFavorite) }
+                dependencies.recipeStore.batchById(batch.id)
+                    ?: batch.copy(recipes = batch.recipes.map { it.copy(isFavorite = targetFavorite) })
+            }.onSuccess { updatedBatch ->
+                load()
+                onSaved(updatedBatch)
+            }.onFailure { error ->
+                load()
+                onError(error.message ?: "Couldn't update favorite.")
+            }
         }
     }
 
-    fun deleteBatch(batchId: String, onDeleted: () -> Unit = {}) {
+    fun deleteRecipe(recipeId: String, onDeleted: (RecipeBatch?) -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            dependencies.recipeStore.deleteBatch(batchId)
-            load()
-            onDeleted()
+            runCatching {
+                dependencies.recipeStore.deleteRecipe(recipeId)
+            }.onSuccess { batch ->
+                load()
+                onDeleted(batch)
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't delete recipe.")
+            }
+        }
+    }
+
+    fun deleteBatch(batchId: String, onDeleted: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching {
+                dependencies.recipeStore.deleteBatch(batchId)
+            }.onSuccess {
+                load()
+                onDeleted()
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't delete recipe batch.")
+            }
         }
     }
 }
@@ -162,10 +204,15 @@ class SettingsViewModel(private val dependencies: Dependencies) : ViewModel() {
         dependencies.preferences.setTheme(themePreference)
     }
 
-    fun clearRecipes(onDone: () -> Unit) {
+    fun clearRecipes(onDone: () -> Unit, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            dependencies.recipeStore.deleteAll()
-            onDone()
+            runCatching {
+                dependencies.recipeStore.deleteAll()
+            }.onSuccess {
+                onDone()
+            }.onFailure { error ->
+                onError(error.message ?: "Couldn't clear recipes.")
+            }
         }
     }
 

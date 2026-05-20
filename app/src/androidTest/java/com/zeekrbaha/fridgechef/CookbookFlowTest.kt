@@ -3,6 +3,8 @@ package com.zeekrbaha.fridgechef
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -20,8 +22,10 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.Locale
 
 @RunWith(AndroidJUnit4::class)
+@OptIn(ExperimentalTestApi::class)
 class CookbookFlowTest {
     @get:Rule
     val rule = createEmptyComposeRule()
@@ -101,15 +105,25 @@ class CookbookFlowTest {
         createRecipe("Favorite Toast")
         createRecipe("Plain Toast")
 
-        openRecipeDetail("Favorite Toast")
-        rule.onNodeWithTag("detail.favorite.button").performClick()
-        rule.onNodeWithText("Back").performClick()
-        rule.onNodeWithText("Back").performClick()
+        openRecipes()
+        rule.onNodeWithTag("recipes.favorite.favorite_toast").performClick()
 
         rule.onNodeWithTag("recipes.filter.favorites").performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Favorite Toast").assertIsDisplayed()
         rule.onAllNodesWithText("Plain Toast").assertCountEquals(0)
+    }
+
+    @Test
+    fun cancelWithUnsavedChangesShowsDiscardPrompt() {
+        clearRecipes()
+        openRecipes()
+        rule.onNodeWithTag("recipes.create.button").performClick()
+        rule.onNodeWithTag("create.title.field").performTextInput("Discard Toast")
+        rule.onNodeWithText("Cancel").performClick()
+        rule.onNodeWithText("Discard changes?").assertIsDisplayed()
+        rule.onNodeWithText("Discard").performClick()
+        rule.onNodeWithText("No saved recipe batches yet.").assertIsDisplayed()
     }
 
     @Test
@@ -129,12 +143,26 @@ class CookbookFlowTest {
     }
 
     @Test
+    fun recipeCanBeDeletedFromEditForm() {
+        clearRecipes()
+        createRecipe("Delete Edit Toast")
+
+        openRecipeDetail("Delete Edit Toast")
+        rule.onNodeWithTag("detail.edit.button").performClick()
+        rule.onNodeWithTag("create.delete.button").performClick()
+        rule.onNodeWithText("Delete this recipe?").assertIsDisplayed()
+        rule.onNodeWithText("Delete").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("No saved recipe batches yet.").assertIsDisplayed()
+    }
+
+    @Test
     fun deletingSingleRecipeCascadesSingleRecipeBatch() {
         clearRecipes()
         createRecipe("Delete Me")
 
-        rule.onNodeWithText("Delete Me").performClick()
-        rule.onNodeWithTag("batch.delete.recipe").performClick()
+        openRecipes()
+        rule.onNodeWithTag("recipes.delete.batch").performClick()
         rule.onNodeWithText("Delete").performClick()
         rule.waitForIdle()
         rule.onNodeWithText("No saved recipe batches yet.").assertIsDisplayed()
@@ -191,8 +219,8 @@ class CookbookFlowTest {
 
     private fun openRecipeDetail(title: String) {
         openRecipes()
-        rule.onNodeWithText(title).performClick()
-        rule.onNodeWithText(title).performClick()
+        rule.onNodeWithTag("recipes.row.${title.recipeTagSlug()}", useUnmergedTree = true).performClick()
+        rule.waitUntilAtLeastOneExists(hasTestTag("detail.edit.button"), 5000)
     }
 
     private fun openCatalog() {
@@ -208,5 +236,9 @@ class CookbookFlowTest {
     private fun openSettings() {
         rule.onNodeWithTag("nav.settings", useUnmergedTree = true).performClick()
         rule.waitForIdle()
+    }
+
+    private fun String.recipeTagSlug(): String {
+        return lowercase(Locale.US).replace(Regex("[^a-z0-9]+"), "_").trim('_')
     }
 }

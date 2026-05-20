@@ -177,7 +177,7 @@ GRADLE_USER_HOME=/private/tmp/gradlehome ./gradlew -PUITEST_FAKE_OPENAI=true con
 Current verified status:
 
 - `testDebugUnitTest assembleDebug assembleDebugAndroidTest`: passing
-- `connectedDebugAndroidTest`: 8 tests passing on `Pixel_8_API_36`
+- `connectedDebugAndroidTest`: 10 tests passing on `Pixel_8_API_36`
 
 ## GitHub
 
